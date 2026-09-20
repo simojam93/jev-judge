@@ -1,5 +1,12 @@
 import type { JevClient, SystemOneAnswer, SystemOneResponse } from "./client.js";
+import { clamp, normalizeScore } from "./normalize.js";
 import type { JudgeOptions, PostInput, PostJudgment } from "./types.js";
+
+// Re-exported for backward compatibility: judge.test.ts (and any external consumers) import
+// `normalizeScore` from here. The implementation now lives in `./normalize.js`, shared with
+// `slop.ts`'s `slopScore` mapping — see that module for the full doc comment on why `score`
+// is always an expectation over rubric indices, never pre-normalized to 0..1.
+export { normalizeScore };
 
 const RELEVANCE_LEVELS = [
   "off-topic or useless",
@@ -11,38 +18,6 @@ const RELEVANCE_LEVELS = [
 
 const DEFAULT_CHUNK_SIZE = 8;
 const DEFAULT_SPAM_THRESHOLD = 0.6;
-
-/**
- * Computes relevance as an expected value over Jev's 0-based rubric indices, normalized to
- * 0..1 by dividing by (levelCount - 1).
- *
- * Per the installed SDK's d.ts (`node_modules/@typesafe-ai/sdk/dist/index.d.mts`,
- * `ScoreResponse`): `score` is "Expected score, which may fall between integer rubric
- * levels", and `legend`/`probabilities` are keyed by the rubric's 0-based indices (e.g. "0"
- * through "4" for our 5-level rubric). That is, `score` is always an expectation over those
- * indices — it is NEVER pre-normalized to 0..1. (A previous version of this function
- * guessed otherwise for `raw <= 1` and silently inflated bottom-quartile posts up to 4x;
- * that heuristic has been removed.)
- *
- * When `probabilities` is present we recompute the expectation directly from it
- * (Σ levelIndex * P(levelIndex)) rather than trusting the separately-reported `score`
- * float, so the two can never disagree; otherwise we fall back to `raw / (levelCount - 1)`.
- */
-export function normalizeScore(
-  raw: number | undefined,
-  levelCount: number,
-  probabilities?: Record<string, number>
-): number {
-  if (probabilities) {
-    const expected = Object.entries(probabilities).reduce((sum, [level, p]) => sum + Number(level) * p, 0);
-    return expected / (levelCount - 1);
-  }
-  return (raw ?? 0) / (levelCount - 1);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function chunkPosts(posts: PostInput[], size: number): PostInput[][] {
   const chunks: PostInput[][] = [];

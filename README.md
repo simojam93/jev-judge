@@ -86,6 +86,46 @@ type JudgeOptions = {
 };
 ```
 
+## Slop check
+
+`checkSlop` is a pre-publish self-check: run a draft through it before it goes out, and it flags text that reads as AI-generated rather than something a specific person wrote. Like `judgePosts` and `shouldContinueScrolling`, it asks Jev calibrated questions instead of parsing prose — a `score` question over a 5-level "human ↔ slop" rubric, and a `noul` question for generic filler — and gets back numbers with real probabilities and confidence attached.
+
+```ts
+import { createJevClient, checkSlop } from "jev-judge";
+
+const client = createJevClient();
+
+const check = await checkSlop(client, {
+  text: "Thrilled to announce this incredible milestone! Excited for what's next — stay tuned!",
+  platform: "linkedin",
+});
+// { slopScore: 78, confidence: 0.8, verdict: "slop", genericFiller: true, fillerScore: 0.9 }
+
+if (check.verdict !== "human") {
+  console.log(`this draft reads as ${check.verdict} (score ${check.slopScore}) — consider a rewrite`);
+}
+```
+
+`checkSlop(client, args)` — `args.text` is required (throws `Error("text is required")` for empty/whitespace-only text, without calling the client); `args.platform` (`"x" | "linkedin"`, defaults to `"generic"`) is passed through into Jev's state so it can weigh platform-typical conventions; `args.thresholds` overrides either or both of the default verdict cutoffs below.
+
+| `slopScore` | `verdict` |
+| --- | --- |
+| below 35 | `human` |
+| 35 up to (not including) 65 | `borderline` |
+| 65 and above | `slop` |
+
+**`SlopCheck`**
+
+```ts
+type SlopCheck = {
+  slopScore: number;        // 0..100, higher = more AI-slop
+  confidence: number;       // 0..1 from the score answer
+  verdict: "human" | "borderline" | "slop";
+  genericFiller: boolean;   // noul >= 0.5: padded with generic filler phrases
+  fillerScore: number;      // raw noul 0..1
+};
+```
+
 ## Retries
 
 `createJevClient` wraps every `systemOne` call in its own retry-with-backoff (1s, 2s, 4s) on HTTP 429 (rate limited) and 529 (overloaded) responses. The underlying SDK client is constructed with its own internal retries disabled (`retry: { maxRetries: 0 }`) specifically so the two retry loops don't compound into a much larger worst-case number of HTTP calls than the documented backoff implies.

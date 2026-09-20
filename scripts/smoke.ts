@@ -8,9 +8,13 @@
 // real identities) against a fixed topic through the real API, and prints each post's raw
 // Jev `score`/`probabilities` next to jev-judge's mapped `relevance` — so a live run
 // visibly exercises (and would catch a regression in) the score-normalization logic in
-// src/judge.ts.
+// src/judge.ts. It then runs checkSlop over one hardcoded obviously-sloppy sample and one
+// hardcoded human-sounding sample (again generic, no real identities), printing each one's
+// mapped slopScore/verdict/filler fields — exercising the shared normalization logic in
+// src/normalize.ts from the other direction.
 
 import {
+  checkSlop,
   createJevClient,
   judgePosts,
   type JevClient,
@@ -87,4 +91,46 @@ console.log(formatRow(columns));
 console.log(widths.map((w) => "-".repeat(w)).join("  "));
 for (const row of rows) {
   console.log(formatRow(row));
+}
+
+// --- checkSlop smoke: one obviously-sloppy sample and one human-sounding sample, both
+// hardcoded and generic (no real identities), same spirit as the judgePosts samples above. ---
+const slopSamples: { label: string; text: string }[] = [
+  {
+    label: "sloppy",
+    text: "In today's fast-paced digital landscape, it's more important than ever to stay ahead of the curve! Excited to share this game-changing insight that will transform the way you work. Don't miss out — the future is now!",
+  },
+  {
+    label: "human",
+    text: "Spent the weekend chasing a race condition in the stem-separation pipeline — a buffer was getting reused before its async write finished. Obvious in hindsight; took four hours to spot.",
+  },
+];
+
+console.log();
+console.log("checkSlop:");
+console.log();
+
+const slopColumns = ["label", "slopScore", "confidence", "verdict", "genericFiller", "fillerScore"];
+const slopRows: string[][] = [];
+for (const sample of slopSamples) {
+  const check = await checkSlop(realClient, { text: sample.text });
+  slopRows.push([
+    sample.label,
+    String(check.slopScore),
+    check.confidence.toFixed(3),
+    check.verdict,
+    String(check.genericFiller),
+    check.fillerScore.toFixed(3),
+  ]);
+}
+
+const slopWidths = slopColumns.map((header, col) =>
+  Math.max(header.length, ...slopRows.map((row) => row[col]!.length))
+);
+const formatSlopRow = (cells: string[]) => cells.map((cell, col) => cell.padEnd(slopWidths[col]!)).join("  ");
+
+console.log(formatSlopRow(slopColumns));
+console.log(slopWidths.map((w) => "-".repeat(w)).join("  "));
+for (const row of slopRows) {
+  console.log(formatSlopRow(row));
 }

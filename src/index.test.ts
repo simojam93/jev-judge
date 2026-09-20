@@ -13,4 +13,8 @@ describe("index exports", () => {
   it("exports shouldContinueScrolling", () => {
     expect(typeof lib.shouldContinueScrolling).toBe("function");
   });
+
+  it("exports checkSlop", () => {
+    expect(typeof lib.checkSlop).toBe("function");
+  });
 });
