@@ -1,0 +1,35 @@
+{
+  "name": "jev-judge",
+  "version": "0.1.0",
+  "description": "Calibrated relevance and spam judgments for social posts, powered by Jev (TypeSafe System One)",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "author": "Simone Lovera",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simojam93/jev-judge.git"
+  },
+  "keywords": [],
+  "bugs": {
+    "url": "https://github.com/simojam93/jev-judge/issues"
+  },
+  "homepage": "https://github.com/simojam93/jev-judge#readme",
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}
