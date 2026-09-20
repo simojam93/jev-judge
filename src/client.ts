@@ -78,8 +78,25 @@ export async function withRetries<T>(fn: () => Promise<T>, opts: WithRetriesOpti
   }
 }
 
+/**
+ * Constructs the underlying `TypeSafeClient` with its own internal retries disabled.
+ *
+ * The SDK's `TypeSafeClient` retries HTTP 429/5xx internally by default (see
+ * `node_modules/@typesafe-ai/sdk/dist/index.d.mts`, `//#region src/types.d.ts`,
+ * `RetryPolicy.maxRetries`: "Maximum retries after the initial attempt; `0` disables
+ * retries. Default: 2." — i.e. up to 3 attempts per call, retrying 408/429/500-599 by
+ * default). Left enabled, that would compound with our own `withRetries` wrapper (up to 4
+ * attempts with its default `maxRetries: 3`) for a worst case of 3 * 4 = 12 HTTP calls per
+ * `systemOne` call. We disable it here (`retry: { maxRetries: 0 }`, per
+ * `TypeSafeClientConfig.retry?: Partial<RetryPolicy>` in the same file) so `withRetries` is
+ * the only retry loop, and our documented 1s/2s/4s backoff maps 1:1 to actual HTTP attempts.
+ */
+function createConfiguredSdkClient(): TypeSafeClient {
+  return new TypeSafeClient({ retry: { maxRetries: 0 } });
+}
+
 function createSdkBackedClient(): JevClient {
-  const sdkClient = new TypeSafeClient();
+  const sdkClient = createConfiguredSdkClient();
   return {
     systemOne(req: SystemOneRequest): Promise<SystemOneResponse> {
       // The SDK infers precise per-question response types from `questions` (a `Questions`
@@ -91,6 +108,15 @@ function createSdkBackedClient(): JevClient {
       return sdkClient.systemOne(req as any) as unknown as Promise<SystemOneResponse>;
     },
   };
+}
+
+/**
+ * @internal Test-only seam: exposes the configured `TypeSafeClient` itself (rather than the
+ * `JevClient`-wrapped version) so tests can assert on its resolved `retry` policy — a public
+ * readonly property — without making a network call.
+ */
+export function createConfiguredSdkClientForTesting(): TypeSafeClient {
+  return createConfiguredSdkClient();
 }
 
 function wrapWithRetries(inner: JevClient, opts?: { maxRetries?: number; sleep?: SleepFn }): JevClient {

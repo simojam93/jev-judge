@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createConfiguredSdkClientForTesting,
   createJevClient,
   createJevClientForTesting,
   isRetryableError,
@@ -12,6 +13,20 @@ function statusError(status: number, message: string): Error & { status: number 
   const err = new Error(message) as Error & { status: number };
   err.status = status;
   return err;
+}
+
+/** Runs `fn` with a dummy `TYPESAFE_API_KEY` set, restoring the previous value afterward, so
+ * constructing a real SDK client doesn't throw for a missing key. Never makes a network call
+ * on its own — only calling `.systemOne(...)` would. */
+function withFakeApiKey<T>(fn: () => T): T {
+  const previous = process.env.TYPESAFE_API_KEY;
+  process.env.TYPESAFE_API_KEY = "test-key";
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = previous;
+  }
 }
 
 describe("isRetryableError", () => {
@@ -68,6 +83,22 @@ describe("withRetries", () => {
     expect(result).toBe("recovered");
     expect(fn).toHaveBeenCalledTimes(3);
     expect(sleep.mock.calls).toEqual([[1000], [2000]]);
+  });
+
+  it("retries through a third 4s backoff when the first two retries aren't enough", async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      if (calls <= 3) throw statusError(429, "Too Many Requests");
+      return "recovered";
+    });
+
+    const result = await withRetries(fn, { maxRetries: 3, sleep });
+
+    expect(result).toBe("recovered");
+    expect(fn).toHaveBeenCalledTimes(4);
+    expect(sleep.mock.calls).toEqual([[1000], [2000], [4000]]);
   });
 
   it("retries a 529 (overloaded) failure", async () => {
@@ -172,14 +203,22 @@ describe("createJevClient", () => {
   });
 
   it("builds a real SDK-backed client when no override is given", () => {
-    const previous = process.env.TYPESAFE_API_KEY;
-    process.env.TYPESAFE_API_KEY = "test-key";
-    try {
+    withFakeApiKey(() => {
       const client = createJevClient();
       expect(typeof client.systemOne).toBe("function");
-    } finally {
-      if (previous === undefined) delete process.env.TYPESAFE_API_KEY;
-      else process.env.TYPESAFE_API_KEY = previous;
-    }
+    });
+  });
+
+  it("disables the SDK client's own internal retries so they don't compound with withRetries", () => {
+    // The SDK's TypeSafeClient retries 429/5xx internally by default (RetryPolicy.maxRetries
+    // default: 2, i.e. up to 3 attempts per call). Left enabled, that would compound with our
+    // own withRetries wrapper (up to 4 attempts with our default maxRetries: 3) for a worst
+    // case of 3 * 4 = 12 HTTP calls per systemOne call. `TypeSafeClient.retry` is a public,
+    // fully-resolved `RetryPolicy` (see node_modules/@typesafe-ai/sdk/dist/index.d.mts), so
+    // we can assert directly on it without a network call.
+    withFakeApiKey(() => {
+      const sdkClient = createConfiguredSdkClientForTesting();
+      expect(sdkClient.retry.maxRetries).toBe(0);
+    });
   });
 });

@@ -13,4 +13,6 @@ export type PostJudgment = {
   spamScore: number;
 };
 
-export type JudgeOptions = { chunkSize?: number; spamThreshold?: number; maxRetries?: number };
+// Note: retries are a concern of the client returned by `createJevClient` (constructed
+// separately and passed in), not of `judgePosts` itself, so there is no `maxRetries` here.
+export type JudgeOptions = { chunkSize?: number; spamThreshold?: number };

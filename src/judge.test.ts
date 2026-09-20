@@ -8,12 +8,32 @@ function makePost(id: string, text = `text for ${id}`): PostInput {
 }
 
 describe("normalizeScore", () => {
-  it("treats a raw score already within 0..1 as pre-normalized", () => {
-    expect(normalizeScore(0.4, 5)).toBe(0.4);
+  it("normalizes a raw score with no probabilities by dividing by (levelCount - 1)", () => {
+    // 1 / (5 - 1) = 0.25
+    expect(normalizeScore(1, 5)).toBe(0.25);
   });
 
-  it("treats a raw score greater than 1 as a level-weighted index over (levelCount - 1)", () => {
-    expect(normalizeScore(2, 5)).toBe(0.5); // 2 / (5 - 1)
+  it("normalizes another raw score with no probabilities", () => {
+    // 0.9 / (5 - 1) = 0.225
+    expect(normalizeScore(0.9, 5)).toBeCloseTo(0.225, 10);
+  });
+
+  it("computes the expectation from probabilities concentrated on the top level", () => {
+    const probabilities = { "0": 0, "1": 0, "2": 0, "3": 0, "4": 1 };
+    // expected index = 4 -> 4 / (5 - 1) = 1
+    expect(normalizeScore(0, 5, probabilities)).toBe(1);
+  });
+
+  it("computes the expectation from probabilities concentrated on the bottom level", () => {
+    const probabilities = { "0": 1, "1": 0, "2": 0, "3": 0, "4": 0 };
+    // expected index = 0 -> 0 / (5 - 1) = 0
+    expect(normalizeScore(4, 5, probabilities)).toBe(0);
+  });
+
+  it("prefers probabilities over raw score when both are present and disagree", () => {
+    // raw score alone (4 / (5 - 1) = 1) would say "max relevance"; probabilities disagree.
+    const probabilities = { "0": 1, "1": 0, "2": 0, "3": 0, "4": 0 };
+    expect(normalizeScore(4, 5, probabilities)).toBe(0);
   });
 });
 
@@ -28,7 +48,7 @@ describe("judgePosts", () => {
     expect(systemOne).not.toHaveBeenCalled();
   });
 
-  it("maps an already-normalized score (<=1) and a low spam noul", async () => {
+  it("maps a raw score with no probabilities via score / (levelCount - 1)", async () => {
     const client: JevClient = {
       systemOne: vi.fn().mockResolvedValue({
         answers: {
@@ -40,10 +60,11 @@ describe("judgePosts", () => {
 
     const [judgment] = await judgePosts(client, { topic: "cats", posts: [makePost("p1")] });
 
-    expect(judgment).toEqual({ id: "p1", relevance: 80, relevanceConfidence: 0.9, isSpam: false, spamScore: 0.1 });
+    // 0.8 / (5 levels - 1) = 0.2 -> round(20) = 20
+    expect(judgment).toEqual({ id: "p1", relevance: 20, relevanceConfidence: 0.9, isSpam: false, spamScore: 0.1 });
   });
 
-  it("maps an unnormalized level-weighted score (>1, over 5 levels) to 0..100", async () => {
+  it("maps a raw score of 3 over 5 levels to relevance 75", async () => {
     const client: JevClient = {
       systemOne: vi.fn().mockResolvedValue({
         answers: {
@@ -57,6 +78,38 @@ describe("judgePosts", () => {
 
     // 3 / (5 levels - 1) = 0.75 -> round(75) = 75
     expect(judgment).toEqual({ id: "p1", relevance: 75, relevanceConfidence: 0.7, isSpam: false, spamScore: 0.2 });
+  });
+
+  it("computes relevance from probabilities when present, preferring them over raw score", async () => {
+    const client: JevClient = {
+      systemOne: vi.fn().mockResolvedValue({
+        answers: {
+          // Raw score alone (4 / 4 = 1.0 -> 100) would say max relevance; probabilities,
+          // which concentrate all mass on the bottom level, say the opposite.
+          rel_0: { score: 4, confidence: 0.5, probabilities: { "0": 1, "1": 0, "2": 0, "3": 0, "4": 0 } },
+          spam_0: { noul: 0 },
+        },
+      } satisfies SystemOneResponse),
+    };
+
+    const [judgment] = await judgePosts(client, { topic: "cats", posts: [makePost("p1")] });
+
+    expect(judgment.relevance).toBe(0);
+  });
+
+  it("computes relevance 100 from probabilities concentrated on the top level", async () => {
+    const client: JevClient = {
+      systemOne: vi.fn().mockResolvedValue({
+        answers: {
+          rel_0: { score: 4, confidence: 0.9, probabilities: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 1 } },
+          spam_0: { noul: 0 },
+        },
+      } satisfies SystemOneResponse),
+    };
+
+    const [judgment] = await judgePosts(client, { topic: "cats", posts: [makePost("p1")] });
+
+    expect(judgment.relevance).toBe(100);
   });
 
   it("flags a post as spam when spamScore meets the default threshold (0.6)", async () => {
@@ -100,7 +153,7 @@ describe("judgePosts", () => {
     expect(judgment.isSpam).toBe(true);
   });
 
-  it("builds the exact spam instructions text and the exact 5 relevance levels", async () => {
+  it("builds the exact spam/relevance instructions text referencing the post id, and the exact 5 relevance levels", async () => {
     const systemOne = vi.fn().mockResolvedValue({
       answers: { rel_0: { score: 0.5, confidence: 1 }, spam_0: { noul: 0 } },
     } satisfies SystemOneResponse);
@@ -111,10 +164,11 @@ describe("judgePosts", () => {
     const [request] = systemOne.mock.calls[0] as [SystemOneRequest];
     expect(request.questions.spam_0).toMatchObject({
       type: "noul",
-      instructions: "Is post 0 spam, engagement bait, or low-effort filler?",
+      instructions: "Is post p1 spam, engagement bait, or low-effort filler?",
     });
     expect(request.questions.rel_0).toMatchObject({
       type: "score",
+      instructions: "How relevant and valuable is post p1 for someone hunting inspiration about the topic?",
       criteria: [
         "off-topic or useless",
         "tangentially related",
@@ -169,7 +223,9 @@ describe("judgePosts", () => {
     expect(results).toHaveLength(17);
     results.forEach((judgment, i) => {
       expect(judgment.id).toBe(`p${i}`);
-      expect(judgment.relevance).toBe(Math.round((i / 100) * 100));
+      // No probabilities in this fixture, so relevance = round((score / (5 levels - 1)) * 100).
+      const expectedRelevance = Math.round((rawScoreById.get(`p${i}`)! / 4) * 100);
+      expect(judgment.relevance).toBe(expectedRelevance);
     });
   });
 
@@ -191,7 +247,7 @@ describe("judgePosts", () => {
     expect(systemOne).toHaveBeenCalledTimes(3); // 2 + 2 + 1
   });
 
-  it("falls back to relevance 0 / confidence 0 / not spam and warns when a post's answers are missing", async () => {
+  it("falls back to relevance 0 / confidence 0 / not spam and warns when a post's answers are entirely missing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const posts = [makePost("p0"), makePost("p1")];
@@ -206,8 +262,29 @@ describe("judgePosts", () => {
 
       const results = await judgePosts(client, { topic: "cats", posts });
 
-      expect(results[0]).toEqual({ id: "p0", relevance: 90, relevanceConfidence: 0.9, isSpam: false, spamScore: 0.1 });
+      // 0.9 / (5 levels - 1) = 0.225 -> round(22.5) = 23
+      expect(results[0]).toEqual({ id: "p0", relevance: 23, relevanceConfidence: 0.9, isSpam: false, spamScore: 0.1 });
       expect(results[1]).toEqual({ id: "p1", relevance: 0, relevanceConfidence: 0, isSpam: false, spamScore: 0 });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("falls back to relevance 0 / not spam and warns when spamAnswer.noul is undefined", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const systemOne = vi.fn().mockResolvedValue({
+        answers: {
+          rel_0: { score: 0.9, confidence: 0.9 },
+          spam_0: {}, // present, but missing `noul`
+        },
+      } satisfies SystemOneResponse);
+      const client: JevClient = { systemOne };
+
+      const [judgment] = await judgePosts(client, { topic: "cats", posts: [makePost("p1")] });
+
+      expect(judgment).toEqual({ id: "p1", relevance: 0, relevanceConfidence: 0, isSpam: false, spamScore: 0 });
       expect(warn).toHaveBeenCalled();
     } finally {
       warn.mockRestore();

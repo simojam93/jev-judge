@@ -13,19 +13,31 @@ const DEFAULT_CHUNK_SIZE = 8;
 const DEFAULT_SPAM_THRESHOLD = 0.6;
 
 /**
- * Normalizes a Jev `score` answer to the 0..1 range.
+ * Computes relevance as an expected value over Jev's 0-based rubric indices, normalized to
+ * 0..1 by dividing by (levelCount - 1).
  *
- * The installed SDK (`node_modules/@typesafe-ai/sdk/dist/index.d.mts`) documents
- * `ScoreResponse.score` only as "expected score, which may fall between integer rubric
- * levels" — it does not say whether the API already normalizes to 0..1 or returns a
- * probability-weighted index over the rubric's 0-based levels (0..levelCount-1, matching
- * `ScoreLegend`'s 0-based keys). We handle both defensively: a value already within 0..1 is
- * assumed pre-normalized; anything larger is treated as a level index and divided by
- * (levelCount - 1).
+ * Per the installed SDK's d.ts (`node_modules/@typesafe-ai/sdk/dist/index.d.mts`,
+ * `ScoreResponse`): `score` is "Expected score, which may fall between integer rubric
+ * levels", and `legend`/`probabilities` are keyed by the rubric's 0-based indices (e.g. "0"
+ * through "4" for our 5-level rubric). That is, `score` is always an expectation over those
+ * indices — it is NEVER pre-normalized to 0..1. (A previous version of this function
+ * guessed otherwise for `raw <= 1` and silently inflated bottom-quartile posts up to 4x;
+ * that heuristic has been removed.)
+ *
+ * When `probabilities` is present we recompute the expectation directly from it
+ * (Σ levelIndex * P(levelIndex)) rather than trusting the separately-reported `score`
+ * float, so the two can never disagree; otherwise we fall back to `raw / (levelCount - 1)`.
  */
-export function normalizeScore(raw: number, levelCount: number): number {
-  if (raw <= 1) return raw;
-  return raw / (levelCount - 1);
+export function normalizeScore(
+  raw: number | undefined,
+  levelCount: number,
+  probabilities?: Record<string, number>
+): number {
+  if (probabilities) {
+    const expected = Object.entries(probabilities).reduce((sum, [level, p]) => sum + Number(level) * p, 0);
+    return expected / (levelCount - 1);
+  }
+  return (raw ?? 0) / (levelCount - 1);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -42,15 +54,15 @@ function chunkPosts(posts: PostInput[], size: number): PostInput[][] {
 
 function buildQuestions(posts: PostInput[]): Record<string, unknown> {
   const questions: Record<string, unknown> = {};
-  posts.forEach((_post, i) => {
+  posts.forEach((post, i) => {
     questions[`rel_${i}`] = {
       type: "score",
-      instructions: `How relevant and valuable is post ${i} for someone hunting inspiration about the topic?`,
+      instructions: `How relevant and valuable is post ${post.id} for someone hunting inspiration about the topic?`,
       criteria: RELEVANCE_LEVELS,
     };
     questions[`spam_${i}`] = {
       type: "noul",
-      instructions: `Is post ${i} spam, engagement bait, or low-effort filler?`,
+      instructions: `Is post ${post.id} spam, engagement bait, or low-effort filler?`,
       criteria: {
         true: "The post is spam, engagement bait, or low-effort filler.",
         false: "The post is a genuine, substantive contribution.",
@@ -69,14 +81,19 @@ function judgmentFor(
   const relAnswer: SystemOneAnswer | undefined = answers[`rel_${index}`];
   const spamAnswer: SystemOneAnswer | undefined = answers[`spam_${index}`];
 
-  if (!relAnswer || !spamAnswer || relAnswer.score === undefined) {
+  if (
+    !relAnswer ||
+    !spamAnswer ||
+    (relAnswer.score === undefined && !relAnswer.probabilities) ||
+    spamAnswer.noul === undefined
+  ) {
     console.warn(
       `jev-judge: missing Jev answer for post "${post.id}" (index ${index}); defaulting to relevance 0.`
     );
     return { id: post.id, relevance: 0, relevanceConfidence: 0, isSpam: false, spamScore: 0 };
   }
 
-  const normalized = normalizeScore(relAnswer.score, RELEVANCE_LEVELS.length);
+  const normalized = normalizeScore(relAnswer.score, RELEVANCE_LEVELS.length, relAnswer.probabilities);
   const relevance = clamp(Math.round(normalized * 100), 0, 100);
   const relevanceConfidence = relAnswer.confidence ?? 0;
   const spamScore = spamAnswer.noul ?? 0;
