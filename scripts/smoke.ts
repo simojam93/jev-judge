@@ -5,9 +5,11 @@
 // checkout) it prints a SKIPPED line and exits 0, so wiring this into a pipeline is safe.
 //
 // When the key IS present, it judges 3 hardcoded, generic sample posts (fake handles, no
-// real identities) against a fixed topic through the real API, and prints each post's raw
-// Jev `score`/`probabilities` next to jev-judge's mapped `relevance` — so a live run
-// visibly exercises (and would catch a regression in) the score-normalization logic in
+// real identities) against a fixed topic through the real API, passing a small set of
+// hardcoded taste examples (kept/skipped) so tasteFit and the taste-weighted rank are
+// actually exercised end to end, and prints each post's raw Jev `score`/`probabilities`
+// next to jev-judge's mapped relevance/quality/tasteFit/rank — so a live run visibly
+// exercises (and would catch a regression in) the score-normalization and ranking logic in
 // src/judge.ts. It then runs checkSlop over one hardcoded obviously-sloppy sample and one
 // hardcoded human-sounding sample (again generic, no real identities), printing each one's
 // mapped slopScore/verdict/filler fields — exercising the shared normalization logic in
@@ -17,6 +19,7 @@ import {
   checkSlop,
   createJevClient,
   judgePosts,
+  sortByRank,
   type JevClient,
   type PostInput,
   type SystemOneRequest,
@@ -50,6 +53,13 @@ const posts: PostInput[] = [
   },
 ];
 
+// Generic, hardcoded taste examples (no real identities) so the smoke run exercises the
+// taste_i question and tasteFit/rank's 3-way weighting, not just the no-taste 2-way path.
+const taste = {
+  kept: ["Wrote up a step-by-step on debugging audio latency in a DAW plugin, with real numbers."],
+  skipped: ["best deal ever!!! link in bio!!! don't miss out!!!"],
+};
+
 // Wrap the real client so we can see each post's raw Jev answer (score/probabilities)
 // alongside judgePosts's mapped output, without duplicating judgePosts's own question logic.
 const realClient = createJevClient();
@@ -62,16 +72,27 @@ const capturingClient: JevClient = {
   },
 };
 
-const judgments = await judgePosts(capturingClient, { topic, posts });
+const judgments = await judgePosts(capturingClient, { topic, posts, taste });
 
 // With 3 posts and the default chunk size (8), everything happens in a single systemOne
-// call, so rel_<i>/spam_<i> in that one response map directly back to posts[i].
+// call, so rel_<i>/qual_<i>/spam_<i>/taste_<i> in that one response map directly back to
+// posts[i].
 const [response] = rawResponses;
 
 console.log(`topic: ${topic}`);
 console.log();
 
-const columns = ["id", "raw score", "probabilities", "mapped relevance", "isSpam", "spamScore"];
+const columns = [
+  "id",
+  "raw score",
+  "probabilities",
+  "relevance",
+  "quality",
+  "tasteFit",
+  "rank",
+  "isSpam",
+  "spamScore",
+];
 const rows = judgments.map((judgment, i) => {
   const relAnswer = response?.answers[`rel_${i}`];
   return [
@@ -79,6 +100,9 @@ const rows = judgments.map((judgment, i) => {
     relAnswer?.score !== undefined ? relAnswer.score.toFixed(3) : "n/a",
     relAnswer?.probabilities ? JSON.stringify(relAnswer.probabilities) : "n/a",
     String(judgment.relevance),
+    String(judgment.quality),
+    judgment.tasteFit !== null ? judgment.tasteFit.toFixed(3) : "n/a",
+    String(judgment.rank),
     String(judgment.isSpam),
     judgment.spamScore.toFixed(3),
   ];
@@ -92,6 +116,9 @@ console.log(widths.map((w) => "-".repeat(w)).join("  "));
 for (const row of rows) {
   console.log(formatRow(row));
 }
+
+console.log();
+console.log("sortByRank order:", sortByRank(judgments).map((j) => j.id).join(" > "));
 
 // --- checkSlop smoke: one obviously-sloppy sample and one human-sounding sample, both
 // hardcoded and generic (no real identities), same spirit as the judgePosts samples above. ---

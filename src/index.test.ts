@@ -10,6 +10,10 @@ describe("index exports", () => {
     expect(typeof lib.judgePosts).toBe("function");
   });
 
+  it("exports sortByRank", () => {
+    expect(typeof lib.sortByRank).toBe("function");
+  });
+
   it("exports shouldContinueScrolling", () => {
     expect(typeof lib.shouldContinueScrolling).toBe("function");
   });

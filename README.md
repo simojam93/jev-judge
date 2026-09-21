@@ -8,7 +8,7 @@ Calibrated relevance and spam judgments for social posts, powered by [Jev](https
 
 Most "let an LLM decide" pipelines wrap a chat model in a loop: stuff a rubric into a prompt, ask for JSON back, parse it, retry when the model wanders off-format, and hope the scoring stays consistent across resamples. jev-judge takes a different approach. It asks Jev's System One model calibrated, typed questions — a `score` question over an explicit, ordered rubric for relevance, a `noul` (yes/no-with-probability) question for spam — and gets back numbers with real probabilities and confidence attached, not prose to parse. No JSON-mode gymnastics, no retry-on-malformed-output, no prompt-engineered rubric text that silently drifts between calls.
 
-The library does two things with that primitive: `judgePosts` scores a batch of posts against a topic (0–100 relevance, a spam flag plus its raw probability) in one API call per chunk, and `shouldContinueScrolling` asks a single calibrated question — given what's been seen so far, is fetching more likely to be worth it? — so a feed-scrolling loop can decide to stop itself instead of scrolling forever or guessing at a fixed page count. Everything talks to Jev through one small, injectable client interface (`JevClient`), so both your own code and this library's own test suite can run against a fake with no network call and no API key.
+The library does two things with that primitive: `judgePosts` scores a batch of posts against a topic — 0–100 relevance, a topic-independent 0–100 quality score, a spam flag plus its raw probability, and (when you pass examples of posts the user kept versus skipped) an optional taste fit — then combines them into a single 0–100 `rank` you can sort by, all in one API call per chunk. `shouldContinueScrolling` asks a single calibrated question — given what's been seen so far, is fetching more likely to be worth it? — so a feed-scrolling loop can decide to stop itself instead of scrolling forever or guessing at a fixed page count. Everything talks to Jev through one small, injectable client interface (`JevClient`), so both your own code and this library's own test suite can run against a fake with no network call and no API key.
 
 ## Install
 
@@ -21,7 +21,7 @@ Set `TYPESAFE_API_KEY` in your environment — see the [TypeSafe docs](https://d
 ## Usage
 
 ```ts
-import { createJevClient, judgePosts, shouldContinueScrolling } from "jev-judge";
+import { createJevClient, judgePosts, sortByRank, shouldContinueScrolling } from "jev-judge";
 
 const client = createJevClient();
 
@@ -35,7 +35,10 @@ const judgments = await judgePosts(client, {
   topic: "home studio audio gear",
   posts,
 });
-// [{ id: "1", relevance: 82, relevanceConfidence: 0.7, isSpam: false, spamScore: 0.05 }, ...]
+// [{ id: "1", relevance: 82, relevanceConfidence: 0.7, quality: 74, qualityConfidence: 0.6,
+//    tasteFit: null, rank: 79, isSpam: false, spamScore: 0.05 }, ...]
+
+const ranked = sortByRank(judgments); // highest rank first; equal ranks keep input order
 
 const { continue: keepScrolling, confidence } = await shouldContinueScrolling(client, {
   topic: "home studio audio gear",
@@ -51,7 +54,8 @@ console.log(keepScrolling ? "keep scrolling" : "stop here", confidence);
 | Export | Signature | Notes |
 | --- | --- | --- |
 | `createJevClient` | `(opts?: { maxRetries?: number; sleep?: (ms: number) => Promise<void> }) => JevClient` | Builds a `JevClient` backed by `@typesafe-ai/sdk`. Wraps every call with retry-with-backoff on HTTP 429/529 (see [Retries](#retries)). `maxRetries` defaults to `3`; `sleep` is injectable (real timers by default). |
-| `judgePosts` | `(client: JevClient, args: { topic: string; posts: PostInput[]; options?: JudgeOptions }) => Promise<PostJudgment[]>` | Chunks `posts` (default 8/call) into one `systemOne` call each: one `score` question (5-level relevance rubric) and one `noul` question (spam) per post. Returns judgments in input order. |
+| `judgePosts` | `(client: JevClient, args: { topic: string; posts: PostInput[]; taste?: TasteExamples; options?: JudgeOptions }) => Promise<PostJudgment[]>` | Chunks `posts` (default 8/call) into one `systemOne` call each: a `score` question for relevance (5-level rubric, vs `topic`), a `score` question for quality (5-level rubric, topic-independent, always asked), a `noul` question for spam, and — only when `args.taste` is passed — a `noul` question for taste fit. Combines the signals into `rank` (see [Rank weights](#rank-weights)). Returns judgments in input order. |
+| `sortByRank` | `(judgments: PostJudgment[]) => PostJudgment[]` | Sorts by `rank` descending. Stable (equal ranks keep their input order) and non-mutating (returns a new array). |
 | `shouldContinueScrolling` | `(client: JevClient, args: { topic: string; seenCount: number; lastBatch: PostJudgment[] }) => Promise<{ continue: boolean; confidence: number }>` | One `noul` question over `lastBatch`'s relevance distribution (average/max relevance, spam ratio). `confidence` is the answer's distance from a 50/50 coin flip, rescaled to 0..1. |
 
 **`PostInput`**
@@ -70,8 +74,12 @@ type PostInput = {
 ```ts
 type PostJudgment = {
   id: string;
-  relevance: number;           // 0..100
+  relevance: number;           // 0..100, vs the topic
   relevanceConfidence: number; // 0..1
+  quality: number;             // 0..100, topic-independent — always computed
+  qualityConfidence: number;   // 0..1
+  tasteFit: number | null;     // 0..1 raw probability; null unless `taste` was passed
+  rank: number;                // 0..100, weighted mix of the three signals above
   isSpam: boolean;
   spamScore: number;           // 0..1, raw Jev noul probability
 };
@@ -83,8 +91,55 @@ type PostJudgment = {
 type JudgeOptions = {
   chunkSize?: number;      // posts per systemOne call, default 8
   spamThreshold?: number;  // spamScore at/above which isSpam is true, default 0.6
+  weights?: JudgeWeights;  // overrides the default rank weights — see Rank weights
 };
 ```
+
+## Personalizing rank with taste examples
+
+`judgePosts` accepts an optional `taste` argument: recent post texts the user has kept versus skipped, in their own words.
+
+```ts
+const judgments = await judgePosts(client, {
+  topic: "home studio audio gear",
+  posts,
+  taste: {
+    kept: ["a post the user saved, in its own text", "another one they kept"],
+    skipped: ["a post they scrolled past or dismissed"],
+  },
+});
+// tasteFit is now the raw 0..1 probability that the user would want to keep each post, and
+// rank folds it in alongside relevance/quality instead of ignoring taste entirely.
+```
+
+**`TasteExamples`**
+
+```ts
+type TasteExamples = {
+  kept: string[];    // recent post texts the user saved or kept
+  skipped: string[]; // recent post texts the user dismissed or skipped
+};
+```
+
+Passing `taste` does three things: it adds a per-post `noul` question asking whether the user would want to keep that post, given what they've kept versus skipped; it includes `taste.kept`/`taste.skipped` in the call's `state` so Jev can weigh the pattern across both lists; and it switches `rank` to the 3-way weights below instead of the 2-way default. Without `taste`, `tasteFit` is always `null` and `rank` only mixes relevance and quality. Each of `kept`/`skipped` is truncated defensively before being sent — capped at the first 15 items, 400 characters each — so pass your most relevant recent examples first.
+
+### Rank weights
+
+`rank` (0..100, rounded) is a weighted mix of the three signals above:
+
+| Weight | no `taste` (default) | with `taste` (default) |
+| --- | --- | --- |
+| `relevance` | 0.6 | 0.45 |
+| `quality` | 0.4 | 0.3 |
+| `taste` (× `tasteFit * 100`) | 0 (`tasteFit` is `null`) | 0.25 |
+
+Override any or all of them via `options.weights`:
+
+```ts
+type JudgeWeights = { relevance: number; quality: number; taste: number };
+```
+
+The three must sum to ~1 (within ±0.01) — `judgePosts` throws a clear `Error` before making any network call otherwise.
 
 ## Slop check
 
@@ -132,7 +187,7 @@ type SlopCheck = {
 
 ## Honest limits
 
-- **Chunk sizing** is a starting point, not a tuned answer. `judgePosts` asks 2 questions per post, so a chunk of 8 posts is 16 questions in one `systemOne` call — wider chunks mean fewer calls but a larger prompt per call, and the right trade-off depends on your post length, latency budget, and Jev's per-call pricing. Benchmark against your own data before assuming the default is right for you.
+- **Chunk sizing** is a starting point, not a tuned answer. `judgePosts` asks 3 questions per post (relevance, quality, spam), or 4 when you pass `taste` (plus a taste-fit question), so a chunk of 8 posts is 24–32 questions in one `systemOne` call — wider chunks mean fewer calls but a larger prompt per call, and the right trade-off depends on your post length, latency budget, and Jev's per-call pricing. The default chunk size (8) is unchanged from before quality/taste existed; benchmark against your own data before assuming it's right for you.
 - **Pricing**: Jev bills per `systemOne` call/token, not per post. See [typesafe.ai](https://typesafe.ai) for current pricing before running this over a large backlog.
 - This library only knows about plain `{ id, text, author?, metrics? }` posts — it has no opinion on where they came from, and ships with no platform-specific fixtures or fetching logic.
 
