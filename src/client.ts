@@ -47,8 +47,16 @@ export function isRetryableError(error: unknown): boolean {
     const status = (error as { status?: unknown }).status;
     if (status === 429 || status === 529) return true;
   }
+  // Transport-level failures are retryable too: the SDK throws
+  // `APITimeoutError` (its own 10s request timeout) and `APIConnectionError`
+  // (DNS/socket/reset) with no HTTP status at all. Observed live
+  // (2026-09-22): a ~50s network stall surfaced as APITimeoutError and, left
+  // un-retried, failed an entire scout run. Matched by class name first,
+  // then by the usual message shapes for non-SDK errors and test fakes.
+  const name = error instanceof Error ? error.name : "";
+  if (name === "APITimeoutError" || name === "APIConnectionError") return true;
   const message = error instanceof Error ? error.message : String(error);
-  return /\b(429|529)\b/.test(message);
+  return /\b(429|529)\b/.test(message) || /timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(message);
 }
 
 export interface WithRetriesOptions {

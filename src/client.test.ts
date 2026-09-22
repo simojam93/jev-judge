@@ -221,4 +221,22 @@ describe("createJevClient", () => {
       expect(sdkClient.retry.maxRetries).toBe(0);
     });
   });
+
+  describe("isRetryableError — transport failures", () => {
+    it("treats the SDK's APITimeoutError and APIConnectionError as retryable", () => {
+      const timeout = new Error("Request timed out after 10000ms.");
+      timeout.name = "APITimeoutError";
+      const conn = new Error("Connection error.");
+      conn.name = "APIConnectionError";
+      expect(isRetryableError(timeout)).toBe(true);
+      expect(isRetryableError(conn)).toBe(true);
+    });
+
+    it("treats plain network error messages as retryable, but not other errors", () => {
+      expect(isRetryableError(new Error("fetch failed"))).toBe(true);
+      expect(isRetryableError(new Error("read ECONNRESET"))).toBe(true);
+      expect(isRetryableError(new Error("Unknown model: jev-1"))).toBe(false);
+      expect(isRetryableError(new Error("400 bad request"))).toBe(false);
+    });
+  });
 });
