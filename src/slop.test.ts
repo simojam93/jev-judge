@@ -91,12 +91,12 @@ describe("checkSlop", () => {
     expect(result.verdict).toBe("borderline");
   });
 
-  it("classifies slopScore 64 as borderline (just below the slop threshold)", async () => {
+  it("classifies slopScore 59 as borderline (just below the slop threshold)", async () => {
     const client: JevClient = {
       systemOne: vi.fn().mockResolvedValue({
         answers: {
-          // expected = 2*0.44 + 3*0.56 = 2.56 -> /4 = 0.64 -> slopScore 64
-          slop: { confidence: 0.5, probabilities: { "0": 0, "1": 0, "2": 0.44, "3": 0.56, "4": 0 } },
+          // expected = 2*0.64 + 3*0.36 = 2.36 -> /4 = 0.59 -> slopScore 59
+          slop: { confidence: 0.5, probabilities: { "0": 0, "1": 0, "2": 0.64, "3": 0.36, "4": 0 } },
           filler: { noul: 0 },
         },
       } satisfies SystemOneResponse),
@@ -104,16 +104,16 @@ describe("checkSlop", () => {
 
     const result = await checkSlop(client, { text: "some draft text" });
 
-    expect(result.slopScore).toBe(64);
+    expect(result.slopScore).toBe(59);
     expect(result.verdict).toBe("borderline");
   });
 
-  it("classifies slopScore 65 as slop (at the slop threshold)", async () => {
+  it("classifies slopScore 60 as slop (at the slop threshold)", async () => {
     const client: JevClient = {
       systemOne: vi.fn().mockResolvedValue({
         answers: {
-          // expected = 2*0.4 + 3*0.6 = 2.6 -> /4 = 0.65 -> slopScore 65
-          slop: { confidence: 0.5, probabilities: { "0": 0, "1": 0, "2": 0.4, "3": 0.6, "4": 0 } },
+          // expected = 2*0.6 + 3*0.4 = 2.4 -> /4 = 0.6 -> slopScore 60
+          slop: { confidence: 0.5, probabilities: { "0": 0, "1": 0, "2": 0.6, "3": 0.4, "4": 0 } },
           filler: { noul: 0 },
         },
       } satisfies SystemOneResponse),
@@ -121,7 +121,7 @@ describe("checkSlop", () => {
 
     const result = await checkSlop(client, { text: "some draft text" });
 
-    expect(result.slopScore).toBe(65);
+    expect(result.slopScore).toBe(60);
     expect(result.verdict).toBe("slop");
   });
 
@@ -136,7 +136,7 @@ describe("checkSlop", () => {
       } satisfies SystemOneResponse),
     };
 
-    // Under the default thresholds (35/65), slopScore 70 would be "slop". Overriding just
+    // Under the default thresholds (35/60), slopScore 70 would be "slop". Overriding just
     // `slop` to 75 should reclassify it as "borderline", while `borderline` still falls back
     // to its default of 35.
     const result = await checkSlop(client, {
@@ -220,11 +220,11 @@ describe("checkSlop", () => {
     expect(request.questions.slop).toMatchObject({
       type: "score",
       criteria: [
-        "reads like a specific human wrote it — concrete, opinionated, lived-in",
-        "mostly human — a few stock phrases",
-        "mixed — noticeable templated patterns",
-        "largely generic — AI-typical structure and hedging",
-        "obvious AI slop — hollow, padded, interchangeable",
+        "none of these fingerprints — loose, uneven, human rhythm (typos, fragments, slang, tangents)",
+        "one faint fingerprint",
+        "a couple of fingerprints, but the voice is still uneven",
+        "several fingerprints: polished, parallel, no wasted words",
+        "textbook LLM prose: balanced tricolons, em-dashes, a neat closing line, zero looseness",
       ],
     });
   });
