@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { JevClient, SystemOneRequest, SystemOneResponse } from "./client.js";
+import type { JevClient, SystemOneAnswer, SystemOneRequest, SystemOneResponse } from "./client.js";
 import { judgePosts, normalizeScore, sortByRank } from "./judge.js";
 import type { PostInput, PostJudgment } from "./types.js";
 
