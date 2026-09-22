@@ -31,6 +31,15 @@ const QUALITY_LEVELS = [
 // "Honest limits" section in README.md. Benchmark against your own data before assuming 8
 // is right for you.
 const DEFAULT_CHUNK_SIZE = 8;
+/**
+ * How many chunks are in flight at once. Chunks used to be judged strictly one after
+ * another; live (2026-09-22) a 98-post round meant 13 sequential ~1.2s calls, so one round
+ * alone ate ~20s and the caller's time budget forbade a second one. Four concurrent calls
+ * keep the same rate-limit safety net (`withRetries` on 429/529 per call) while cutting a
+ * round's judging time roughly 4x. Override via `options.concurrency`; 1 restores the old
+ * sequential behaviour.
+ */
+const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_SPAM_THRESHOLD = 0.6;
 
 // Defaults for JudgeOptions.weights, picked by whether taste examples were supplied. Kept
@@ -185,7 +194,7 @@ function judgmentFor(
  * the user's taste examples, and whether it looks like spam, via Jev.
  *
  * Posts are chunked (default 8 per call, see `options.chunkSize`) into one `systemOne` call
- * each, asking per post: a `score` question for relevance (5 ordered levels, vs `topic`), a
+ * each, up to `options.concurrency` (default 4) chunks in flight at a time, asking per post: a `score` question for relevance (5 ordered levels, vs `topic`), a
  * `score` question for quality (5 ordered levels, topic-independent — always asked), and a
  * `noul` question for spam. When `args.taste` is supplied — recent post texts the user
  * `kept` versus `skipped`, each capped at 15 items of 400 characters before being sent — a
@@ -217,20 +226,32 @@ export async function judgePosts(
   const spamThreshold = options?.spamThreshold ?? DEFAULT_SPAM_THRESHOLD;
   const truncatedTaste = taste !== undefined ? truncateTasteExamples(taste) : undefined;
 
-  const results: PostJudgment[] = [];
-  for (const chunk of chunkPosts(posts, chunkSize)) {
+  const chunks = chunkPosts(posts, chunkSize);
+  const concurrency = Math.max(1, Math.floor(options?.concurrency ?? DEFAULT_CONCURRENCY));
+
+  const judgeChunk = async (chunk: PostInput[]): Promise<PostJudgment[]> => {
     const state: Record<string, unknown> = { topic, posts: chunk };
     if (truncatedTaste) state.taste = truncatedTaste;
-
     const response = await client.systemOne({
       state,
       questions: buildQuestions(chunk, includeTaste),
     });
-    chunk.forEach((post, i) => {
-      results.push(judgmentFor(post, i, response.answers, spamThreshold, includeTaste, weights));
-    });
-  }
-  return results;
+    return chunk.map((post, i) => judgmentFor(post, i, response.answers, spamThreshold, includeTaste, weights));
+  };
+
+  // Bounded pool: at most `concurrency` chunks in flight, results slotted by chunk index so
+  // the output order is the input order regardless of which call finishes first. The first
+  // rejection propagates (once the other in-flight calls settle) as the sequential loop's did.
+  const perChunk: PostJudgment[][] = new Array(chunks.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < chunks.length) {
+      const index = next++;
+      perChunk[index] = await judgeChunk(chunks[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker));
+  return perChunk.flat();
 }
 
 /**

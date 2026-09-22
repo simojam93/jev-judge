@@ -36,4 +36,10 @@ export type JudgeWeights = { relevance: number; quality: number; taste: number }
 
 // Note: retries are a concern of the client returned by `createJevClient` (constructed
 // separately and passed in), not of `judgePosts` itself, so there is no `maxRetries` here.
-export type JudgeOptions = { chunkSize?: number; spamThreshold?: number; weights?: JudgeWeights };
+export type JudgeOptions = {
+  chunkSize?: number;
+  /** Chunks judged concurrently (default 4 in `judgePosts`); 1 = strictly sequential. */
+  concurrency?: number;
+  spamThreshold?: number;
+  weights?: JudgeWeights;
+};

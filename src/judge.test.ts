@@ -621,4 +621,69 @@ describe("sortByRank", () => {
 
     expect(judgments).toEqual(original);
   });
+
+  describe("concurrency", () => {
+    function post(id: string) {
+      return { id, text: `post ${id}` };
+    }
+    function postsOf(req: SystemOneRequest): number {
+      return (req.state as { posts: unknown[] }).posts.length;
+    }
+    function answersFor(n: number): SystemOneResponse {
+      const answers: Record<string, SystemOneAnswer> = {};
+      for (let i = 0; i < n; i++) {
+        answers[`rel_${i}`] = { score: 4, probabilities: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 1 } };
+        answers[`qual_${i}`] = { score: 4, probabilities: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 1 } };
+        answers[`spam_${i}`] = { noul: 0 };
+      }
+      return { answers };
+    }
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    it("keeps at most `concurrency` chunks in flight and returns input order even when calls finish out of order", async () => {
+      const posts = Array.from({ length: 10 }, (_, i) => post(`p${i}`)); // 5 chunks of 2
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const resolvers: Array<() => void> = [];
+      const systemOne = vi.fn(async (req: SystemOneRequest) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        inFlight--;
+        return answersFor(postsOf(req));
+      });
+
+      const pending = judgePosts({ systemOne }, { topic: "t", posts, options: { chunkSize: 2, concurrency: 3 } });
+      await tick();
+      expect(systemOne).toHaveBeenCalledTimes(3); // pool full, two chunks still queued
+
+      // Release in reverse order: ordering must follow chunk index, not completion time.
+      resolvers.splice(0).reverse().forEach((r) => r());
+      await tick();
+      resolvers.splice(0).reverse().forEach((r) => r());
+      await tick();
+      while (resolvers.length) { resolvers.splice(0).forEach((r) => r()); await tick(); }
+
+      const result = await pending;
+      expect(result.map((j) => j.id)).toEqual(posts.map((p) => p.id));
+      expect(maxInFlight).toBe(3);
+      expect(systemOne).toHaveBeenCalledTimes(5);
+    });
+
+    it("concurrency 1 is strictly sequential", async () => {
+      const posts = Array.from({ length: 6 }, (_, i) => post(`p${i}`));
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const systemOne = vi.fn(async (req: SystemOneRequest) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await tick();
+        inFlight--;
+        return answersFor(postsOf(req));
+      });
+      const result = await judgePosts({ systemOne }, { topic: "t", posts, options: { chunkSize: 2, concurrency: 1 } });
+      expect(maxInFlight).toBe(1);
+      expect(result).toHaveLength(6);
+    });
+  });
 });
