@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { JevClient, SystemOneRequest, SystemOneResponse } from "./client.js";
-import { checkSlop } from "./slop.js";
+import { checkSlop, rateAiStyle } from "./slop.js";
 
 describe("checkSlop", () => {
   it("throws a clear error for empty text without calling the client", async () => {
@@ -239,5 +239,42 @@ describe("checkSlop", () => {
 
     const [request] = systemOne.mock.calls[0] as [SystemOneRequest];
     expect(Object.keys(request.questions).sort()).toEqual(["filler", "slop"]);
+  });
+});
+
+describe("rateAiStyle", () => {
+  const posts = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, text: `post ${i}` }));
+
+  it("asks one slop score per post, 8 per call, and keeps the input order", async () => {
+    const systemOne = vi.fn(async (req: SystemOneRequest) => {
+      const answers: Record<string, { score: number }> = {};
+      for (const key of Object.keys(req.questions)) answers[key] = { score: 4 };
+      return { answers } as SystemOneResponse;
+    });
+    const ratings = await rateAiStyle({ systemOne }, { posts });
+    expect(systemOne).toHaveBeenCalledTimes(2);
+    expect(Object.keys(systemOne.mock.calls[0]![0].questions)).toHaveLength(8);
+    expect((systemOne.mock.calls[0]![0].state as { posts: unknown[] }).posts).toHaveLength(8);
+    expect(ratings.map((r) => r.id)).toEqual(posts.map((p) => p.id));
+    expect(ratings[0]).toEqual({ id: "p0", slopScore: 100, verdict: "slop" });
+  });
+
+  it("a missing answer rates null, not zero; scores bucket like checkSlop", async () => {
+    const systemOne = vi.fn(async () => ({ answers: { slop_0: { score: 0 }, slop_2: { score: 2 } } }) as unknown as SystemOneResponse);
+    const ratings = await rateAiStyle({ systemOne }, { posts: posts.slice(0, 3) });
+    expect(ratings).toEqual([
+      { id: "p0", slopScore: 0, verdict: "human" },
+      { id: "p1", slopScore: null, verdict: null },
+      { id: "p2", slopScore: 50, verdict: "borderline" },
+    ]);
+  });
+
+  it("no posts, no call; long texts are bounded", async () => {
+    const systemOne = vi.fn(async (_req: SystemOneRequest) => ({ answers: {} }) as SystemOneResponse);
+    expect(await rateAiStyle({ systemOne }, { posts: [] })).toEqual([]);
+    expect(systemOne).not.toHaveBeenCalled();
+    await rateAiStyle({ systemOne }, { posts: [{ id: "long", text: "x".repeat(5000) }] });
+    const sent = systemOne.mock.calls[0]![0].state as { posts: Array<{ text: string }> };
+    expect(sent.posts[0]!.text).toHaveLength(2000);
   });
 });

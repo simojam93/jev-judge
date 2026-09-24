@@ -106,3 +106,66 @@ export async function checkSlop(
     fillerScore,
   };
 }
+
+/** One post to rate for AI style in a batch. */
+export type AiStyleInput = { id: string; text: string };
+/** A post's AI-style rating; `slopScore`/`verdict` are null when Jev's answer for it was missing. */
+export type AiStyleRating =
+  | { id: string; slopScore: number; verdict: SlopVerdict }
+  | { id: string; slopScore: null; verdict: null };
+
+const AI_STYLE_CHUNK_SIZE = 8;
+const AI_STYLE_CONCURRENCY = 3;
+/** A rated post's text is bounded: the fingerprints show in the first couple of thousand characters. */
+const AI_STYLE_MAX_TEXT_CHARS = 2000;
+
+/**
+ * The batch form of {@link checkSlop} for many posts at once (PostEcho's Find Ideas cards, 2026-09-24: "sarebbe
+ * figo se anche i post cercati nel find ideas avessero un check di jev se sono AI slop o no"): the same `slop`
+ * rubric, one `score` question per post, chunked like `judgePosts` (8 per `systemOne` call, at most 3 calls in
+ * flight), so twenty results cost three calls instead of twenty. Output order is input order. No filler question —
+ * the cards only show the AI-style verdict.
+ */
+export async function rateAiStyle(
+  client: JevClient,
+  args: { posts: AiStyleInput[]; options?: { chunkSize?: number; concurrency?: number; thresholds?: { borderline?: number; slop?: number } } }
+): Promise<AiStyleRating[]> {
+  const { posts, options } = args;
+  if (posts.length === 0) return [];
+  const size = Math.max(1, Math.floor(options?.chunkSize ?? AI_STYLE_CHUNK_SIZE));
+  const chunks: AiStyleInput[][] = [];
+  for (let start = 0; start < posts.length; start += size) chunks.push(posts.slice(start, start + size));
+
+  const rateChunk = async (chunk: AiStyleInput[]): Promise<AiStyleRating[]> => {
+    const questions: Record<string, unknown> = {};
+    chunk.forEach((post, i) => {
+      questions[`slop_${i}`] = {
+        type: "score",
+        instructions: `${SLOP_INSTRUCTIONS} Rate post ${post.id} only.`,
+        criteria: SLOP_LEVELS,
+      };
+    });
+    const response = await client.systemOne({
+      state: { posts: chunk.map((p) => ({ id: p.id, text: p.text.slice(0, AI_STYLE_MAX_TEXT_CHARS) })) },
+      questions,
+    });
+    return chunk.map((post, i): AiStyleRating => {
+      const answer: SystemOneAnswer | undefined = response.answers[`slop_${i}`];
+      if (!answer || (answer.score === undefined && !answer.probabilities)) return { id: post.id, slopScore: null, verdict: null };
+      const slopScore = clamp(Math.round(normalizeScore(answer.score, SLOP_LEVELS.length, answer.probabilities) * 100), 0, 100);
+      return { id: post.id, slopScore, verdict: verdictFor(slopScore, options?.thresholds) };
+    });
+  };
+
+  const perChunk: AiStyleRating[][] = new Array(chunks.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < chunks.length) {
+      const index = next++;
+      perChunk[index] = await rateChunk(chunks[index]);
+    }
+  };
+  const concurrency = Math.max(1, Math.floor(options?.concurrency ?? AI_STYLE_CONCURRENCY));
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker));
+  return perChunk.flat();
+}
