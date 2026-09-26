@@ -12,8 +12,10 @@ The library does two things with that primitive: `judgePosts` scores a batch of 
 
 ## Install
 
+Not on npm yet: install it from GitHub (the `prepare` script builds `dist/` on install).
+
 ```sh
-npm install jev-judge
+npm install github:simojam93/jev-judge
 ```
 
 Set `TYPESAFE_API_KEY` in your environment — see the [TypeSafe docs](https://docs.typesafe.ai/) for how to get one.
