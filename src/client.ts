@@ -99,12 +99,14 @@ export async function withRetries<T>(fn: () => Promise<T>, opts: WithRetriesOpti
  * `TypeSafeClientConfig.retry?: Partial<RetryPolicy>` in the same file) so `withRetries` is
  * the only retry loop, and our documented 1s/2s/4s backoff maps 1:1 to actual HTTP attempts.
  */
-function createConfiguredSdkClient(): TypeSafeClient {
-  return new TypeSafeClient({ retry: { maxRetries: 0 } });
+function createConfiguredSdkClient(apiKey?: string): TypeSafeClient {
+  // `apiKey` when the caller holds the key itself (an app that stores it for its user);
+  // otherwise the SDK reads TYPESAFE_API_KEY.
+  return new TypeSafeClient({ retry: { maxRetries: 0 }, ...(apiKey ? { apiKey } : {}) });
 }
 
-function createSdkBackedClient(): JevClient {
-  const sdkClient = createConfiguredSdkClient();
+function createSdkBackedClient(apiKey?: string): JevClient {
+  const sdkClient = createConfiguredSdkClient(apiKey);
   return {
     systemOne(req: SystemOneRequest): Promise<SystemOneResponse> {
       // The SDK infers precise per-question response types from `questions` (a `Questions`
@@ -123,8 +125,8 @@ function createSdkBackedClient(): JevClient {
  * `JevClient`-wrapped version) so tests can assert on its resolved `retry` policy — a public
  * readonly property — without making a network call.
  */
-export function createConfiguredSdkClientForTesting(): TypeSafeClient {
-  return createConfiguredSdkClient();
+export function createConfiguredSdkClientForTesting(apiKey?: string): TypeSafeClient {
+  return createConfiguredSdkClient(apiKey);
 }
 
 function wrapWithRetries(inner: JevClient, opts?: { maxRetries?: number; sleep?: SleepFn }): JevClient {
@@ -140,10 +142,11 @@ function wrapWithRetries(inner: JevClient, opts?: { maxRetries?: number; sleep?:
 /**
  * Creates a {@link JevClient} backed by `@typesafe-ai/sdk`'s `TypeSafeClient`, wrapping every
  * `systemOne` call with retry-with-backoff on HTTP 429 (rate limited) and 529 (overloaded)
- * failures. Requires `TYPESAFE_API_KEY` to be set (see the SDK's `TypeSafeClientConfig`).
+ * failures. Uses `opts.apiKey` when given, else `TYPESAFE_API_KEY` (see the SDK's
+ * `TypeSafeClientConfig`).
  */
-export function createJevClient(opts?: { maxRetries?: number; sleep?: SleepFn }): JevClient {
-  return wrapWithRetries(createSdkBackedClient(), opts);
+export function createJevClient(opts?: { maxRetries?: number; sleep?: SleepFn; apiKey?: string }): JevClient {
+  return wrapWithRetries(createSdkBackedClient(opts?.apiKey), opts);
 }
 
 /**

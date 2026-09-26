@@ -1,6 +1,6 @@
 {
   "name": "jev-judge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Calibrated relevance and spam judgments for social posts, powered by Jev (TypeSafe System One)",
   "type": "module",
   "license": "MIT",

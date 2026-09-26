@@ -222,6 +222,16 @@ describe("createJevClient", () => {
     });
   });
 
+  it("takes the API key from the caller when given, without TYPESAFE_API_KEY (0.2.1)", () => {
+    const saved = process.env.TYPESAFE_API_KEY;
+    delete process.env.TYPESAFE_API_KEY;
+    try {
+      expect(() => createConfiguredSdkClientForTesting("ts-key-from-the-app")).not.toThrow();
+    } finally {
+      if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
+    }
+  });
+
   describe("isRetryableError — transport failures", () => {
     it("treats the SDK's APITimeoutError and APIConnectionError as retryable", () => {
       const timeout = new Error("Request timed out after 10000ms.");
