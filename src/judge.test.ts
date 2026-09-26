@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { JevClient, SystemOneAnswer, SystemOneRequest, SystemOneResponse } from "./client.js";
 import { judgePosts, normalizeScore, sortByRank } from "./judge.js";
-import type { PostInput, PostJudgment } from "./types.js";
+import type { PostInput, PostJudgment, PostKind } from "./types.js";
 
 function makePost(id: string, text = `text for ${id}`): PostInput {
   return { id, text };
@@ -685,5 +685,85 @@ describe("sortByRank", () => {
       expect(maxInFlight).toBe(1);
       expect(result).toHaveLength(6);
     });
+  });
+});
+
+describe("judgePosts with kinds (0.2.0)", () => {
+  const KINDS: PostKind[] = [
+    { label: "story", description: "A first-hand story with numbers.", weight: 1 },
+    { label: "news", description: "An announcement or release.", weight: 0.4 },
+    { label: "other", description: "None of the above.", weight: 0.1 },
+  ];
+  // relevance 75, quality 50, not spam.
+  function answers(extra: SystemOneResponse["answers"] = {}): SystemOneResponse {
+    return { answers: { rel_0: { score: 3, confidence: 0.7 }, qual_0: { score: 2, confidence: 0.6 }, spam_0: { noul: 0.1 }, ...extra } };
+  }
+  const storyish = { kind_0: { choice: "story", probabilities: { story: 0.7, news: 0.2, other: 0.1 } } };
+
+  it("asks a kind_i choice question and returns kind and kindFit", async () => {
+    const systemOne = vi.fn().mockResolvedValue(answers(storyish));
+    const [j] = await judgePosts({ systemOne }, { topic: "t", posts: [makePost("p1")], kinds: KINDS });
+    const [request] = systemOne.mock.calls[0] as [SystemOneRequest];
+    expect(request.questions.kind_0).toEqual({
+      type: "choice",
+      instructions: "Which kind of post is post p1?",
+      criteria: { story: "A first-hand story with numbers.", news: "An announcement or release.", other: "None of the above." },
+    });
+    expect(j.kind).toBe("story");
+    expect(j.kindFit).toBeCloseTo(0.79, 10);
+  });
+
+  it("ranks with the kinds weights, 0.2/0.35/0/0.45, without taste", async () => {
+    const [j] = await judgePosts({ systemOne: vi.fn().mockResolvedValue(answers(storyish)) }, { topic: "t", posts: [makePost("p1")], kinds: KINDS });
+    // 0.2*75 + 0.35*50 + 0.45*79 = 15 + 17.5 + 35.55 = 68.05
+    expect(j.rank).toBe(68);
+  });
+
+  it("ranks with 0.15/0.25/0.25/0.35 when taste examples are supplied too", async () => {
+    const [j] = await judgePosts(
+      { systemOne: vi.fn().mockResolvedValue(answers({ ...storyish, taste_0: { noul: 0.6 } })) },
+      { topic: "t", posts: [makePost("p1")], kinds: KINDS, taste: { kept: ["a"], skipped: ["b"] } },
+    );
+    // 0.15*75 + 0.25*50 + 0.25*60 + 0.35*79 = 11.25 + 12.5 + 15 + 27.65 = 66.4
+    expect(j.rank).toBe(66);
+  });
+
+  it("neither rewards nor penalizes a post Jev gave no kind for: the other terms share the weight", async () => {
+    const [j] = await judgePosts({ systemOne: vi.fn().mockResolvedValue(answers()) }, { topic: "t", posts: [makePost("p1")], kinds: KINDS });
+    expect(j).toMatchObject({ kind: null, kindFit: null });
+    // (0.2*75 + 0.35*50) / 0.55 = 32.5 / 0.55 = 59.09
+    expect(j.rank).toBe(59);
+  });
+
+  it("leaves kind and kindFit out entirely when no kinds are passed, ranking as 0.1.0 did", async () => {
+    const [j] = await judgePosts({ systemOne: vi.fn().mockResolvedValue(answers(storyish)) }, { topic: "t", posts: [makePost("p1")] });
+    expect(j).not.toHaveProperty("kind");
+    expect(j).not.toHaveProperty("kindFit");
+    expect(j.rank).toBe(65); // 0.6*75 + 0.4*50
+  });
+
+  it("the relevance gate sinks a tangential post and leaves an on-topic one alone", async () => {
+    const gate = { floor: 20, full: 50 };
+    const tangential = { answers: { rel_0: { score: 1 }, qual_0: { score: 4 }, spam_0: { noul: 0 }, kind_0: { choice: "story" } } };
+    const onTopic = { answers: { rel_0: { score: 2 }, qual_0: { score: 4 }, spam_0: { noul: 0 }, kind_0: { choice: "story" } } };
+    const [low] = await judgePosts({ systemOne: vi.fn().mockResolvedValue(tangential) },
+      { topic: "t", posts: [makePost("p1")], kinds: KINDS, options: { relevanceGate: gate } });
+    // 0.2*25 + 0.35*100 + 0.45*100 = 85, × (25 - 20) / 30 = 14.17
+    expect(low.rank).toBe(14);
+    const [high] = await judgePosts({ systemOne: vi.fn().mockResolvedValue(onTopic) },
+      { topic: "t", posts: [makePost("p1")], kinds: KINDS, options: { relevanceGate: gate } });
+    // 0.2*50 + 0.35*100 + 0.45*100 = 90, × 1
+    expect(high.rank).toBe(90);
+  });
+
+  it("throws before calling Jev on a bad gate, bad kinds, or weights that don't sum to ~1 with kind", async () => {
+    const systemOne = vi.fn();
+    const posts = [makePost("p1")];
+    await expect(judgePosts({ systemOne }, { topic: "t", posts, options: { relevanceGate: { floor: 50, full: 50 } } })).rejects.toThrow(/relevanceGate/);
+    await expect(judgePosts({ systemOne }, { topic: "t", posts, kinds: [KINDS[0]] })).rejects.toThrow(/2 to 12/);
+    await expect(judgePosts({ systemOne }, {
+      topic: "t", posts, kinds: KINDS, options: { weights: { relevance: 0.2, quality: 0.3, taste: 0, kind: 0.3 } },
+    })).rejects.toThrow(/weights/);
+    expect(systemOne).not.toHaveBeenCalled();
   });
 });
