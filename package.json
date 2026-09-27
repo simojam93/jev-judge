@@ -1,7 +1,7 @@
 {
   "name": "jev-judge",
   "version": "0.3.0",
-  "description": "Calibrated relevance and spam judgments for social posts, powered by Jev (TypeSafe System One)",
+  "description": "Calibrated judgments for social posts, powered by Jev: relevance, quality, spam, kinds of post, how human a draft reads, and what someone keeps.",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -33,7 +33,18 @@
     "type": "git",
     "url": "git+https://github.com/simojam93/jev-judge.git"
   },
-  "keywords": [],
+  "keywords": [
+    "jev",
+    "typesafe",
+    "llm",
+    "ranking",
+    "relevance",
+    "spam-detection",
+    "ai-writing",
+    "humanize",
+    "social-media",
+    "calibrated"
+  ],
   "bugs": {
     "url": "https://github.com/simojam93/jev-judge/issues"
   },

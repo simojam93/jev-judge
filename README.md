@@ -1,16 +1,45 @@
-# jev-judge
+<h1 align="center">jev-judge</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+<p align="center">
+  Calibrated judgments for social posts: is it on topic, is it any good, is it spam,<br>
+  and does it read like a person wrote it.
+</p>
 
-Calibrated relevance and spam judgments for social posts, powered by [Jev](https://typesafe.ai) (TypeSafe AI's System One model).
+<p align="center">
+  <a href="https://github.com/simojam93/jev-judge/actions/workflows/ci.yml"><img src="https://github.com/simojam93/jev-judge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e6e8ec" alt="MIT license"></a>
+</p>
 
-## What it is
+## What it does
 
-Most "let an LLM decide" pipelines wrap a chat model in a loop: stuff a rubric into a prompt, ask for JSON back, parse it, retry when the model wanders off-format, and hope the scoring stays consistent across resamples. jev-judge takes a different approach. It asks Jev's System One model calibrated, typed questions — a `score` question over an explicit, ordered rubric for relevance, a `noul` (yes/no-with-probability) question for spam — and gets back numbers with real probabilities and confidence attached, not prose to parse. No JSON-mode gymnastics, no retry-on-malformed-output, no prompt-engineered rubric text that silently drifts between calls.
+A small TypeScript library that asks [Jev](https://typesafe.ai), TypeSafe's judging model, the questions a
+feed or a writing tool needs answered:
 
-At its core the library does two things with that primitive: `judgePosts` scores a batch of posts against a topic — 0–100 relevance, a topic-independent 0–100 quality score, a spam flag plus its raw probability, and (when you pass examples of posts the user kept versus skipped) an optional taste fit — then combines them into a single 0–100 `rank` you can sort by, all in one API call per chunk. `shouldContinueScrolling` asks a single calibrated question — given what's been seen so far, is fetching more likely to be worth it? — so a feed-scrolling loop can decide to stop itself instead of scrolling forever or guessing at a fixed page count. Everything talks to Jev through one small, injectable client interface (`JevClient`), so both your own code and this library's own test suite can run against a fake with no network call and no API key.
+- **Rank a batch of posts for a topic** by relevance, quality and, if you give it examples, your taste. One
+  number to sort by.
+- **Rank by the kinds of post you want:** real stories, strong opinions, news, in your own words and
+  weights.
+- **Spot spam** with a probability, not a guess.
+- **Tell how human a draft reads,** 0 to 100 with a verdict, and **rewrite it until it reads human** with
+  the writer of your choice.
+- **Learn what someone keeps:** the traits of style that set apart the posts they pick from the ones they
+  drop, said in plain lessons with the counts behind them.
+- **Know when to stop scrolling:** one calibrated yes or no on whether fetching more is worth it.
 
-Around that core, it checks a draft for the fingerprints of AI writing (`checkSlop`), rewrites it with a writer of your choice until Jev calls it human (`humanize`), and learns from the posts someone keeps and drops which traits of style they go for (`learnFromChoices`), in counts a person can check.
+It powers [PostEcho](https://github.com/simojam93/postecho): the ranking in Find Ideas, the human score on
+every draft, Humanize, and the style guide that learns from the takes you keep.
+
+## Why it's different
+
+Most "let an LLM decide" pipelines wrap a chat model in a loop. You stuff a rubric into a prompt, ask for
+JSON back, parse it, retry when the model wanders off-format, and hope the scores stay consistent from one
+call to the next. jev-judge asks Jev calibrated, typed questions instead: a `score` question over an
+explicit, ordered rubric for relevance, a `noul` (a yes or no with its probability) for spam, a `choice`
+among your kinds of post. What comes back are numbers with real probabilities and confidence attached, not
+prose to parse. There is no JSON mode to coax and no retry on malformed output.
+
+Everything talks to Jev through one small, injectable client interface, `JevClient`, so your code and this
+library's own tests can run against a fake with no network call and no API key.
 
 ## Install
 
@@ -307,11 +336,19 @@ const update = parseGuideUpdate(await myLlm(prompt, { schema: GUIDE_UPDATE_SCHEM
 - **Lessons are counts, not causes.** "7 of 10 you kept have a number" says what someone chooses, not why, and a few dozen choices are a small sample. The smoothing and the minimum of 3 posts per value keep the loudest noise out, not all of it. That's why the writer proposes and the person approves.
 - This library only knows about plain `{ id, text, author?, metrics? }` posts — it has no opinion on where they came from, and ships with no platform-specific fixtures or fetching logic.
 
-## Development notes
+## Development
 
+- `npm test` runs the whole suite against a fake `JevClient`: no network, no API key. `npm run smoke`
+  (`scripts/smoke.ts`) is the one real-network check, skipped when `TYPESAFE_API_KEY` isn't set.
+- `npm run lint` type-checks, and `npm run build` builds `dist/` with tsup. CI runs all three on every push.
 - TypeScript is pinned to `5.9.x`. As of this writing, `tsup@8.5` bundles a `rollup-plugin-dts` build whose declaration-file generation isn't compatible with TypeScript 7's compiler internals; pin back to a 5.x compiler until tsup ships a fix.
-- `npm test` runs the full suite against a fake `JevClient` — no network, no API key. `npm run smoke` (see `scripts/smoke.ts`) is the one real-network check: it's skipped automatically when `TYPESAFE_API_KEY` isn't set.
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains the setup, the checks and
+the library's rules. Please follow the [code of conduct](CODE_OF_CONDUCT.md), and report vulnerabilities
+privately, as [SECURITY.md](SECURITY.md) says.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT, see [LICENSE](LICENSE).
