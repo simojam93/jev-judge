@@ -20,11 +20,18 @@ const SLOP_LEVELS = [
   "textbook LLM prose: balanced tricolons, em-dashes, a neat closing line, zero looseness",
 ] as const;
 
+/**
+ * What the `slop` question looks for, in plain words: give it to a writer so it
+ * rewrites against the same fingerprints Jev scores (see {@link humanize}).
+ */
+export const AI_STYLE_FINGERPRINTS =
+  "perfectly balanced parallel clauses, 'not X, but Y' or 'X. Y. Z.' tricolons, em-dash asides, " +
+  "tidy summarizing last lines, hooks like 'Here's the thing', absence of typos/slang/loose grammar, " +
+  "every sentence load-bearing with no throwaway words";
+
 const SLOP_INSTRUCTIONS =
   "Rate how strongly this social post shows the STYLISTIC FINGERPRINTS of large-language-model writing, " +
-  "regardless of how specific or confident it sounds: perfectly balanced parallel clauses, 'not X, but Y' or " +
-  "'X. Y. Z.' tricolons, em-dash asides, tidy summarizing last lines, hooks like 'Here's the thing', absence of " +
-  "typos/slang/loose grammar, every sentence load-bearing with no throwaway words.";
+  `regardless of how specific or confident it sounds: ${AI_STYLE_FINGERPRINTS}.`;
 
 const DEFAULT_BORDERLINE_THRESHOLD = 35;
 const DEFAULT_SLOP_THRESHOLD = 60;

@@ -8,7 +8,9 @@ Calibrated relevance and spam judgments for social posts, powered by [Jev](https
 
 Most "let an LLM decide" pipelines wrap a chat model in a loop: stuff a rubric into a prompt, ask for JSON back, parse it, retry when the model wanders off-format, and hope the scoring stays consistent across resamples. jev-judge takes a different approach. It asks Jev's System One model calibrated, typed questions — a `score` question over an explicit, ordered rubric for relevance, a `noul` (yes/no-with-probability) question for spam — and gets back numbers with real probabilities and confidence attached, not prose to parse. No JSON-mode gymnastics, no retry-on-malformed-output, no prompt-engineered rubric text that silently drifts between calls.
 
-The library does two things with that primitive: `judgePosts` scores a batch of posts against a topic — 0–100 relevance, a topic-independent 0–100 quality score, a spam flag plus its raw probability, and (when you pass examples of posts the user kept versus skipped) an optional taste fit — then combines them into a single 0–100 `rank` you can sort by, all in one API call per chunk. `shouldContinueScrolling` asks a single calibrated question — given what's been seen so far, is fetching more likely to be worth it? — so a feed-scrolling loop can decide to stop itself instead of scrolling forever or guessing at a fixed page count. Everything talks to Jev through one small, injectable client interface (`JevClient`), so both your own code and this library's own test suite can run against a fake with no network call and no API key.
+At its core the library does two things with that primitive: `judgePosts` scores a batch of posts against a topic — 0–100 relevance, a topic-independent 0–100 quality score, a spam flag plus its raw probability, and (when you pass examples of posts the user kept versus skipped) an optional taste fit — then combines them into a single 0–100 `rank` you can sort by, all in one API call per chunk. `shouldContinueScrolling` asks a single calibrated question — given what's been seen so far, is fetching more likely to be worth it? — so a feed-scrolling loop can decide to stop itself instead of scrolling forever or guessing at a fixed page count. Everything talks to Jev through one small, injectable client interface (`JevClient`), so both your own code and this library's own test suite can run against a fake with no network call and no API key.
+
+Around that core, it checks a draft for the fingerprints of AI writing (`checkSlop`), rewrites it with a writer of your choice until Jev calls it human (`humanize`), and learns from the posts someone keeps and drops which traits of style they go for (`learnFromChoices`), in counts a person can check.
 
 ## Install
 
@@ -59,6 +61,10 @@ console.log(keepScrolling ? "keep scrolling" : "stop here", confidence);
 | `judgePosts` | `(client: JevClient, args: { topic: string; posts: PostInput[]; taste?: TasteExamples; kinds?: PostKind[]; options?: JudgeOptions }) => Promise<PostJudgment[]>` | Chunks `posts` (default 8/call) into one `systemOne` call each: a `score` question for relevance (5-level rubric, vs `topic`), a `score` question for quality (5-level rubric, topic-independent, always asked), a `noul` question for spam, a `noul` question for taste fit (only when `args.taste` is passed), and a `choice` question for the kind of post (only when `args.kinds` is passed). Combines the signals into `rank` (see [Rank weights](#rank-weights)). Returns judgments in input order. |
 | `sortByRank` | `(judgments: PostJudgment[]) => PostJudgment[]` | Sorts by `rank` descending. Stable (equal ranks keep their input order) and non-mutating (returns a new array). |
 | `classifyPosts` | `(client: JevClient, args: { posts: PostInput[]; kinds: PostKind[]; options?: { chunkSize?: number; concurrency?: number } }) => Promise<KindJudgment[]>` | One `choice` question per post: which of your kinds it is. See [Rank by the kinds of post you want](#rank-by-the-kinds-of-post-you-want). |
+| `checkSlop` | `(client: JevClient, args: { text: string; platform?: "x" \| "linkedin"; thresholds?: { borderline?: number; slop?: number } }) => Promise<SlopCheck>` | How much a draft reads as AI-written, 0–100, with a verdict. See [Slop check](#slop-check). |
+| `rateAiStyle` | `(client: JevClient, args: { posts: AiStyleInput[]; options?: { chunkSize?: number; concurrency?: number; thresholds?: { borderline?: number; slop?: number } } }) => Promise<AiStyleRating[]>` | The batch form of `checkSlop`: the same rubric, one `score` question per post, 8 posts per call. |
+| `humanize` | `(args: { original: string; rewrite: (input: HumanizeRewriteInput) => Promise<string>; score?: (text: string) => Promise<HumanizeScore>; maxRounds?: number; onStep?: (step: HumanizeStep) => void }) => Promise<{ text; rounds; score }>` | Your writer rewrites, Jev scores, until it reads human. See [Rewrite until it reads human](#rewrite-until-it-reads-human). |
+| `learnFromChoices` | `(client: JevClient, args: { choices: StyleChoice[]; traits?: StyleTrait[]; options? }) => Promise<{ traits: PostTraits[]; contrasts: TraitContrast[]; lessons: StyleLesson[] }>` | Which traits of style tell the posts someone keeps from the ones they drop. See [Learn from what you keep](#learn-from-what-you-keep). |
 | `shouldContinueScrolling` | `(client: JevClient, args: { topic: string; seenCount: number; lastBatch: PostJudgment[] }) => Promise<{ continue: boolean; confidence: number }>` | One `noul` question over `lastBatch`'s relevance distribution (average/max relevance, spam ratio). `confidence` is the answer's distance from a 50/50 coin flip, rescaled to 0..1. |
 
 **`PostInput`**
@@ -211,8 +217,8 @@ if (check.verdict !== "human") {
 | `slopScore` | `verdict` |
 | --- | --- |
 | below 35 | `human` |
-| 35 up to (not including) 65 | `borderline` |
-| 65 and above | `slop` |
+| 35 up to (not including) 60 | `borderline` |
+| 60 and above | `slop` |
 
 **`SlopCheck`**
 
@@ -226,6 +232,70 @@ type SlopCheck = {
 };
 ```
 
+## Rewrite until it reads human
+
+`humanize` runs the loop you'd otherwise write by hand: your writer rewrites the text, Jev scores the rewrite with the `checkSlop` rubric, and while Jev doesn't call it `human` the writer tries again from the original, with its last try and that try's score in hand. It stops at `human` or after `maxRounds` (default 3), and returns the best-scored rewrite, which isn't always the last.
+
+jev-judge judges; it doesn't write. `rewrite` is yours, any LLM call, and `AI_STYLE_FINGERPRINTS` tells it in plain words what Jev looks for.
+
+```ts
+import { AI_STYLE_FINGERPRINTS, checkSlop, createJevClient, humanize } from "jev-judge";
+
+const client = createJevClient();
+
+const { text, rounds, score } = await humanize({
+  original: draft,
+  rewrite: ({ original, previous }) =>
+    myLlm(
+      `Rewrite this post so a person could have written it. Avoid: ${AI_STYLE_FINGERPRINTS}.\n\n${original}` +
+        (previous ? `\n\nYour last try scored ${previous.slopScore}/100 for AI style:\n${previous.text}` : "")
+    ),
+  score: (text) => checkSlop(client, { text }),
+  onStep: ({ round, phase }) => console.log(`round ${round}: ${phase}`),
+});
+// rounds: [{ round: 1, slopScore: 72, verdict: "slop" }, { round: 2, slopScore: 28, verdict: "human" }]
+```
+
+It degrades rather than fails. Without `score` it runs one round, unscored. A check that throws stops the loop after that round. A rewrite that throws after round 1 keeps the best try so far. Only a failed first rewrite, or an empty `original`, throws. `onStep` is told before each rewrite and each check; an error it throws is ignored.
+
+## Learn from what you keep
+
+Give `learnFromChoices` the posts someone kept (picked, starred, posted and liked) and the ones they dropped. It reads a few traits of style from each, finds the traits that tell the two groups apart, and says them in plain lessons with the counts behind them.
+
+```ts
+import { createJevClient, learnFromChoices } from "jev-judge";
+
+const client = createJevClient();
+
+const { lessons } = await learnFromChoices(client, {
+  choices: [
+    { id: "1", text: "Cut our build from 9 minutes to 2. The one flag that did it:", kept: true },
+    { id: "2", text: "Excited to share some thoughts on developer productivity!", kept: false },
+    { id: "3", text: "Shipped the export button. 40 people used it on day one.", kept: true, weight: 2 },
+    // ...a few dozen of each tells more than a handful
+  ],
+});
+// [{ trait: "numbers", value: "yes", direction: "more", lift: 4.5,
+//    text: "Has a concrete number: 7 of 10 you kept, 1 of 9 you dropped." },
+//  { trait: "hook", value: "claim", direction: "less", lift: 0.21,
+//    text: "Opens with a bold claim: 1 of 10 you kept, 6 of 9 you dropped." }]
+```
+
+- **Traits.** `STYLE_TRAITS` reads seven. Four are read locally by a rule, with no call: length, numbers, first person, short lines. Three are asked of Jev as `choice` questions, 8 posts per call: how the post opens, how it ends, its tone. Pass your own `traits`: each lists its values, with the phrase a lesson says, and reads them with a `read(text)` rule or a Jev `question`.
+- **Contrast.** For each trait value: how many kept and dropped posts have it, and its share on each side. Shares are smoothed (add 0.5), so a value seen twice doesn't read as a law, and `lift` is the kept share over the dropped share. Values seen in fewer than 3 posts are left out. `weight` (default 1) counts a strong signal more, a star or a post that did well: it moves the shares, not the counts a lesson shows.
+- **Lessons.** A lift of 1.5 or more is "more", 1/1.5 or less is "less", strongest first, at most 6. A two-valued trait gets one lesson, said as "more" of the value kept when it can be. A trait with more values can get one each way.
+- **Pieces.** `readStyleTraits`, `contrastTraits` and `styleLessons` are the three steps, to use on their own.
+
+The lessons are evidence, not a style guide. To turn them into one, brief your writer with `guideUpdatePrompt`: it keeps what still holds and changes only what the evidence shows, and says why for each change. Check the answer with `parseGuideUpdate`; `GUIDE_UPDATE_SCHEMA` is its JSON schema, for structured output. Show the changes to the person and apply them only when they say so.
+
+```ts
+import { GUIDE_UPDATE_SCHEMA, guideUpdatePrompt, parseGuideUpdate } from "jev-judge";
+
+const prompt = guideUpdatePrompt({ guide: currentGuide, lessons, edits: ["shorter", "no emoji"] });
+const update = parseGuideUpdate(await myLlm(prompt, { schema: GUIDE_UPDATE_SCHEMA }));
+// { guide: "...", changes: [{ summary: "Lead with a number", reason: "7 of 10 posts you kept do, 1 of 9 you dropped" }] }
+```
+
 ## Retries
 
 `createJevClient` wraps every `systemOne` call in its own retry-with-backoff (1s, 2s, 4s) on HTTP 429 (rate limited) and 529 (overloaded) responses. The underlying SDK client is constructed with its own internal retries disabled (`retry: { maxRetries: 0 }`) specifically so the two retry loops don't compound into a much larger worst-case number of HTTP calls than the documented backoff implies.
@@ -234,6 +304,7 @@ type SlopCheck = {
 
 - **Chunk sizing** is a starting point, not a tuned answer. `judgePosts` asks 3 questions per post (relevance, quality, spam), or 4 when you pass `taste` (plus a taste-fit question), so a chunk of 8 posts is 24–32 questions in one `systemOne` call — wider chunks mean fewer calls but a larger prompt per call, and the right trade-off depends on your post length, latency budget, and Jev's per-call pricing. The default chunk size (8) is unchanged from before quality/taste existed; benchmark against your own data before assuming it's right for you.
 - **Pricing**: Jev bills per `systemOne` call/token, not per post. See [typesafe.ai](https://typesafe.ai) for current pricing before running this over a large backlog.
+- **Lessons are counts, not causes.** "7 of 10 you kept have a number" says what someone chooses, not why, and a few dozen choices are a small sample. The smoothing and the minimum of 3 posts per value keep the loudest noise out, not all of it. That's why the writer proposes and the person approves.
 - This library only knows about plain `{ id, text, author?, metrics? }` posts — it has no opinion on where they came from, and ships with no platform-specific fixtures or fetching logic.
 
 ## Development notes
