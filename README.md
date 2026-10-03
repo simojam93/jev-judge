@@ -26,7 +26,7 @@ feed or a writing tool needs answered:
   drop, said in plain lessons with the counts behind them.
 - **Know when to stop scrolling:** one calibrated yes or no on whether fetching more is worth it.
 
-It powers [PostEcho](https://github.com/simojam93/postecho): the ranking in Find Ideas, the human score on
+It powers [postecho](https://github.com/simojam93/postecho): the ranking in Find Ideas, the human score on
 every draft, Humanize, and the style guide that learns from the takes you keep.
 
 ## Why it's different
